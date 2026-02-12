@@ -1,0 +1,38 @@
+# BillBot Memory Cortex Configuration
+
+# Middleware server settings
+server:
+  host: "0.0.0.0"
+  port: 8300
+
+# Memory model (llama.cpp on Radeon VII)
+model:
+  # WSL2 NAT mode: use gateway IP to reach Windows-hosted llama-server
+  base_url: "http://172.17.96.1:8301/v1"
+  # Model-specific settings (passed to llama-server)
+  context_size: 32768
+  max_tokens: 2048
+
+# SQLite storage
+database:
+  path: "/home/mferr/.openclaw/memory-cortex/memories.db"
+
+# Ingestion settings
+ingestion:
+  # Chunk size for conversation splitting (tokens, approximate)
+  chunk_size: 2048
+  # Overlap between chunks (tokens)
+  chunk_overlap: 256
+  # Max concurrent ingestion tasks
+  max_concurrent: 2
+  # Debounce: wait this many seconds after last message before ingesting
+  debounce_seconds: 30
+
+# Recall settings
+recall:
+  # Max memories to retrieve from FTS5
+  max_results: 20
+  # Max memories to send to model for synthesis
+  top_k: 8
+  # Max tokens for synthesized response
+  max_synthesis_tokens: 1024
