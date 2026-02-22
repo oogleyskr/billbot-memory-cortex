@@ -28,6 +28,10 @@ ingestion:
   # Debounce: wait this many seconds after last message before ingesting
   debounce_seconds: 30
 
+# Embeddings service (nomic-embed on RTX 3090)
+embeddings:
+  url: "http://localhost:8105/embed"
+
 # Recall settings
 recall:
   # Max memories to retrieve from FTS5

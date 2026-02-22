@@ -10,6 +10,7 @@ import yaml
 from aiohttp import web
 
 from . import db, ingestion, recall
+from .embeddings import compute_embedding, cosine_similarity, deserialize_embedding
 
 logger = logging.getLogger("memory-cortex")
 
@@ -221,6 +222,109 @@ async def handle_stats(request: web.Request) -> web.Response:
     return web.json_response(stats)
 
 
+async def handle_hybrid_search(request: web.Request) -> web.Response:
+    """Hybrid search combining FTS5 keyword search with vector similarity.
+
+    POST /hybrid-search
+    Body: {
+        "query": "...",          # required
+        "user_id": "...",        # optional, filter by user
+        "limit": 10              # optional, default 10
+    }
+    """
+    config = request.app["config"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    query = body.get("query", "").strip()
+    if not query:
+        return web.json_response({"error": "No query provided"}, status=400)
+
+    user_id = body.get("user_id")
+    limit = body.get("limit", 10)
+
+    db_path = config["database"]["path"]
+    embed_url = config.get("embeddings", {}).get("url", "http://localhost:8105/embed")
+
+    # 1. FTS5 keyword search
+    fts_results = db.search_memories(db_path, query, user_id=user_id, limit=limit * 2)
+
+    # Normalize FTS5 ranks to 0-1 (rank is negative, lower = better match)
+    fts_scores: dict[int, float] = {}
+    if fts_results:
+        ranks = [r["rank"] for r in fts_results]
+        min_rank = min(ranks)  # Most negative = best match
+        max_rank = max(ranks)  # Least negative = worst match
+        rank_range = max_rank - min_rank
+        for r in fts_results:
+            if rank_range != 0:
+                # Invert: best match (most negative) gets score 1.0
+                fts_scores[r["id"]] = 1.0 - (r["rank"] - min_rank) / rank_range
+            else:
+                fts_scores[r["id"]] = 1.0
+
+    # Build lookup of FTS results by ID
+    fts_by_id: dict[int, dict] = {r["id"]: r for r in fts_results}
+
+    # 2. Vector search
+    vector_scores: dict[int, float] = {}
+    vector_by_id: dict[int, dict] = {}
+    source_label = "fts5"
+
+    try:
+        query_embedding = await compute_embedding(query, embed_url=embed_url)
+        if query_embedding is not None:
+            source_label = "fts5+vector"
+            mem_rows = db.get_memories_with_embeddings(
+                db_path, user_id=user_id, limit=500
+            )
+            for row in mem_rows:
+                emb = deserialize_embedding(row["embedding"])
+                if emb is not None:
+                    sim = cosine_similarity(query_embedding, emb)
+                    # Normalize cosine similarity from [-1,1] to [0,1]
+                    score = (sim + 1.0) / 2.0
+                    vector_scores[row["id"]] = score
+                    vector_by_id[row["id"]] = row
+    except Exception as e:
+        logger.warning("Vector search failed, falling back to FTS5 only: %s", e)
+
+    # 3. Merge scores
+    all_ids = set(fts_scores.keys()) | set(vector_scores.keys())
+    scored: list[tuple[int, float]] = []
+    for mid in all_ids:
+        fts_s = fts_scores.get(mid, 0.0)
+        vec_s = vector_scores.get(mid, 0.0)
+        if vector_scores:
+            final = 0.4 * fts_s + 0.6 * vec_s
+        else:
+            final = fts_s
+        scored.append((mid, final))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:limit]
+
+    # 4. Build response
+    results = []
+    for mid, score in top:
+        mem = fts_by_id.get(mid) or vector_by_id.get(mid)
+        if mem is None:
+            continue
+        results.append({
+            "id": mem["id"],
+            "user_id": mem.get("user_id"),
+            "topic": mem["topic"],
+            "fact": mem["fact"],
+            "importance": mem["importance"],
+            "score": round(score, 4),
+            "source": source_label,
+        })
+
+    return web.json_response({"results": results, "count": len(results)})
+
+
 def create_app(config: dict) -> web.Application:
     """Create the aiohttp application."""
     app = web.Application()
@@ -237,6 +341,7 @@ def create_app(config: dict) -> web.Application:
     app.router.add_get("/recent", handle_recent)
     app.router.add_post("/store", handle_store)
     app.router.add_get("/stats", handle_stats)
+    app.router.add_post("/hybrid-search", handle_hybrid_search)
 
     return app
 
