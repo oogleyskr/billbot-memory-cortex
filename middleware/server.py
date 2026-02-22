@@ -79,6 +79,7 @@ async def handle_ingest(request: web.Request) -> web.Response:
             base_url, db_path, messages,
             session_id=session_id, channel=channel, user_id=user_id,
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            config=config,
         )
         logger.info("Ingestion complete for session=%s: %s", session_id, result)
 
@@ -206,7 +207,7 @@ async def handle_store(request: web.Request) -> web.Response:
     }
 
     db_path = config["database"]["path"]
-    count = db.store_memories(db_path, [memory])
+    count, _ids = db.store_memories(db_path, [memory])
 
     return web.json_response({"status": "stored", "count": count})
 

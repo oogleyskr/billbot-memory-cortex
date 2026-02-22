@@ -145,19 +145,24 @@ async def ingest_conversation(base_url: str, db_path: str,
                               channel: Optional[str] = None,
                               user_id: Optional[str] = None,
                               chunk_size: int = 2048,
-                              chunk_overlap: int = 256) -> dict:
-    """Full ingestion pipeline: chunk, extract, store."""
+                              chunk_overlap: int = 256,
+                              config: dict | None = None) -> dict:
+    """Full ingestion pipeline: chunk, extract, store, embed."""
     from . import db
+    from .embeddings import compute_embedding, serialize_embedding
 
     # Filter to only user messages and assistant responses with content
     relevant = [m for m in messages if m.get("content")]
 
     if not relevant:
-        return {"chunks": 0, "facts_extracted": 0, "facts_stored": 0}
+        return {"chunks": 0, "facts_extracted": 0, "facts_stored": 0, "facts_embedded": 0}
 
     chunks = chunk_conversation(relevant, chunk_size, chunk_overlap)
     total_extracted = 0
     total_stored = 0
+    total_embedded = 0
+
+    embed_url = (config or {}).get("embeddings", {}).get("url", "http://localhost:8105/embed")
 
     for chunk in chunks:
         chunk_text = format_chunk_for_extraction(chunk)
@@ -168,17 +173,32 @@ async def ingest_conversation(base_url: str, db_path: str,
             for fact in facts:
                 fact["user_id"] = user_id
 
-        stored = db.store_memories(db_path, facts)
+        stored_count, stored_ids = db.store_memories(db_path, facts)
         total_extracted += len(facts)
-        total_stored += stored
+        total_stored += stored_count
+
+        # Compute and store embeddings for newly inserted facts
+        for fact, fid in zip(facts, stored_ids):
+            text = f"{fact.get('topic', '')}: {fact.get('fact', '')}"
+            try:
+                embedding = await compute_embedding(text, embed_url)
+                if embedding:
+                    blob = serialize_embedding(embedding)
+                    db.store_embedding(db_path, fid, blob)
+                    total_embedded += 1
+                else:
+                    logger.warning("No embedding returned for memory %d", fid)
+            except Exception as e:
+                logger.error("Failed to embed memory %d: %s", fid, e)
 
     logger.info(
-        "Ingested %d chunks, extracted %d facts, stored %d",
-        len(chunks), total_extracted, total_stored,
+        "Ingested %d chunks, extracted %d facts, stored %d, embedded %d",
+        len(chunks), total_extracted, total_stored, total_embedded,
     )
 
     return {
         "chunks": len(chunks),
         "facts_extracted": total_extracted,
         "facts_stored": total_stored,
+        "facts_embedded": total_embedded,
     }

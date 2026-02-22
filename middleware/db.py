@@ -100,16 +100,17 @@ def init_db(db_path: str) -> None:
         conn.close()
 
 
-def store_memories(db_path: str, memories: list[dict]) -> int:
-    """Store extracted memories. Returns count of inserted rows."""
+def store_memories(db_path: str, memories: list[dict]) -> tuple[int, list[int]]:
+    """Store extracted memories. Returns (count, list_of_row_ids)."""
     if not memories:
-        return 0
+        return 0, []
     conn = get_connection(db_path)
     try:
         now = time.time()
         count = 0
+        row_ids: list[int] = []
         for mem in memories:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO memories (user_id, topic, fact, source_session,
                    source_channel, importance, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -123,9 +124,10 @@ def store_memories(db_path: str, memories: list[dict]) -> int:
                     now,
                 ),
             )
+            row_ids.append(cursor.lastrowid)
             count += 1
         conn.commit()
-        return count
+        return count, row_ids
     finally:
         conn.close()
 
