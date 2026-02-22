@@ -89,6 +89,12 @@ def init_db(db_path: str) -> None:
             except sqlite3.OperationalError:
                 pass  # Already exists
 
+        # Add embedding column (ALTER TABLE doesn't support IF NOT EXISTS)
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN embedding BLOB")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         conn.commit()
     finally:
         conn.close()
@@ -224,6 +230,66 @@ def get_recent_memories(db_path: str, user_id: Optional[str] = None,
                    LIMIT ?""",
                 (limit,),
             ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def store_embedding(db_path: str, memory_id: int, embedding_blob: bytes) -> bool:
+    """Store a precomputed embedding BLOB for a memory. Returns True on success."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE memories SET embedding = ? WHERE id = ?",
+            (embedding_blob, memory_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_memories_with_embeddings(db_path: str, user_id: Optional[str] = None,
+                                  limit: int = 500) -> list[dict]:
+    """Get memories that have embeddings, optionally filtered by user."""
+    conn = get_connection(db_path)
+    try:
+        if user_id:
+            rows = conn.execute(
+                """SELECT id, user_id, topic, fact, importance, created_at,
+                          source_session, source_channel, embedding
+                   FROM memories
+                   WHERE embedding IS NOT NULL AND user_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, user_id, topic, fact, importance, created_at,
+                          source_session, source_channel, embedding
+                   FROM memories
+                   WHERE embedding IS NOT NULL
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_memories_without_embeddings(db_path: str) -> list[dict]:
+    """Get all memories that do not yet have an embedding."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT id, user_id, topic, fact, importance, created_at,
+                      source_session, source_channel
+               FROM memories
+               WHERE embedding IS NULL
+               ORDER BY id""",
+        ).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
